@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Platformer Parkour - Ultra Mega Evolution</title>
+    <style>
+        body { margin: 0; background: #060913; color: #fff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+        #ui { margin-bottom: 10px; font-size: 16px; font-weight: bold; display: flex; gap: 25px; background: rgba(10, 15, 30, 0.85); padding: 12px 24px; border-radius: 10px; border: 1px solid #1e293b; backdrop-filter: blur(6px); box-shadow: 0 4px 25px rgba(0,0,0,0.4); }
+        canvas { background: #03050a; border: 4px solid #1e293b; border-radius: 12px; box-shadow: 0 25px 60px rgba(0,0,0,0.9); cursor: pointer; }
+        #instructions { margin-top: 12px; font-size: 13px; color: #64748b; text-align: center; line-height: 1.5; }
+        .score-val { color: #fbbf24; }
+        .stamina-val { color: #10b981; }
+        .money-val { color: #eab308; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="ui-gameplay" style="display:none;">
+            Puntuación: <span id="score-text" class="score-val">0</span> pts | 
+            Distancia: <span id="distance-text">0</span>m | 
+            Estamina: <span id="stamina-text" class="stamina-val">100</span>% |
+            Monedas: <span id="coins-game-text" class="money-val">0</span> 🪙
+        </div>
+        <div id="ui-menu">
+            🪙 Balance Total: <span id="wallet-text" class="money-val">0</span> monedas | 
+            🏆 Récord: <span id="record-text" style="color: #60a5fa;">0</span>m
+        </div>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+
+    <div id="instructions">
+        <strong>Controles avanzados:</strong> Shift (Correr) | Espacio (Saltar/Escalar) | C (Deslizarse / Rodar al caer)<br>
+        La música de fondo se activará e iniciará su secuencia rítmica de forma automática al empezar la partida.
+    </div>
+
+    <script>
+        var canvas = document.getElementById("gameCanvas");
+        var ctx = canvas.getContext("2d");
+        
+        var scoreText = document.getElementById("score-text");
+        var distanceText = document.getElementById("distance-text");
+        var staminaText = document.getElementById("stamina-text");
+        var coinsGameText = document.getElementById("coins-game-text");
+        var walletText = document.getElementById("wallet-text");
+        var recordText = document.getElementById("record-text");
+        var uiGameplay = document.getElementById("ui-gameplay");
+        var uiMenu = document.getElementById("ui-menu");
+
+        var gameState = "MENU";
+        var selectedMap = 0; 
+        var selectedDifficulty = 1; 
+        var selectedColor = 0;     
+        var selectedAccessory = 0; 
+
+        var globalWallet = parseInt(localStorage.getItem("parkour_wallet")) || 0;
+        var globalRecord = parseInt(localStorage.getItem("parkour_record")) || 0;
+        var unlockedAccessories = JSON.parse(localStorage.getItem("parkour_unlocked")) || [0];
+
+        walletText.innerText = globalWallet;
+        recordText.innerText = globalRecord;
+
+        var playerColors = ["#ffcc99", "#ffb366", "#e0aa70", "#ffdfbe", "#cc9966", "#ffd1b3", "#ffe6d5"];
+
+        var accessories = [
+            "Ninguno", "Gorra hacia atrás", "Gorro de lana", "Casco Moto", "Corona de Rey", "Cinta de Ninja",
+            "Sombrero de copa", "Gorra de Chef", "Sombrero Vaquero", "Boina de Artista", "Gorro de Aviador",
+            "Gafas de Espía", "Monóculo", "Antifaz Héroe", "Gafas VR", "Parche Pirata",
+            "Cigarro Thug Life", "Mascarilla Urbana", "Gafas Cyberpunk", "Bigote Elegante", "Visor de Rastreo",
+            "Jetpack Pasivo", "Capa de Héroe", "Alas Demonio", "Espada Ninja", "Auriculares Cuello",
+            "Bufanda Larga", "Escudo Caballero", "Aura de Energía", "Mochila Escolar", "Skate Colgado"
+        ];
+        var ACCESSORY_PRICE = 5;
+
+        var diffSpeedMultiplier = 1.0;
+        var diffStaminaDrain = 1.0;
+        var diffObstacleChance = 0.45;
+
+        var furthestX = 150;
+        var camX = 0;
+        var coinsCollectedInRun = 0;
+        var totalScore = 0;
+
+        // JUGADOR: DIMENSIONES BASADAS EN LA FOTO OVALADA
+        var px = 150, py = 150, pw = 32, ph = 42, baseH = 42, baseW = 32;
+        var pvx = 0, pvy = 0;
+        var pGrounded = false, pJumpsLeft = 2, pStamina = 100;
+        var pIsSliding = false, pSlideTimer = 0, pFacing = 1, pSlideDir = 1;
+        var pIsDashing = false, pDashTimer = 0, pDashDir = 1, pHasDashedInAir = false; 
+        var pIsWallRunning = false, pIsLedgeHanging = false, pLedgeTimer = 0, maxLedgeTime = 180, pLedgeCooldown = 0, pIsClimbing = false; 
+
+        // NUEVAS VARIABLES DE ANIMACIÓN FLUIDA
+        var pRotation = 0; 
+        var pIsRolling = false; 
+        var pRollTimer = 0;
+        var pSquashX = 1, pSquashY = 1; 
+        var pBlinkTimer = 0;
+
+        var platforms = [], obstacles = [], coins = [], walls = [], highWalls = [], ledges = []; 
+        var enemies = []; var bossProjectiles = []; var nextStructureX = 0; 
+
+        var bossActive = false; var bossX = 0, bossY = 120; var bossHp = 100, bossMaxHp = 100; var bossTimer = 0; var bossShootCooldown = 0; var lastBossMilestone = 0;
+
+        var keyLeft = false, keyRight = false, keySpace = false, keyShift = false, keyC = false, keyUp = false, keyDown = false;
+
+        var mapThemes = [
+            { name: "Bosque de Jade", bg: "#09121d", grass: "#2d6a4f", dirt: "#402e2a", wallRun: "#1b4332", climb: "#74c69d", ledge: "#95d5b2" },
+            { name: "Tierras Volcánicas", bg: "#160606", grass: "#ba181b", dirt: "#2b1e1e", wallRun: "#660708", climb: "#f26419", ledge: "#f6bd60" },
+            { name: "Estación Ciberpunk", bg: "#04040c", grass: "#00f5ff", dirt: "#0f1123", wallRun: "#12142c", climb: "#ff007f", ledge: "#00ffaa" }
+        ];
+
+        var buttons = {
+            maps: [{ x: 40, y: 120, w: 140, h: 42, label: "🌲 Bosque" }, { x: 195, y: 120, w: 140, h: 42, label: "🌋 Volcán" }, { x: 350, y: 120, w: 140, h: 42, label: "🌌 Cyber" }],
+            diffs: [{ x: 40, y: 215, w: 140, h: 38, label: "Fácil" }, { x: 195, y: 215, w: 140, h: 38, label: "Medio" }, { x: 350, y: 215, w: 140, h: 38, label: "Difícil" }],
+            colorsY: 120, colorsXStart: 535,
+            btnPrevAcc: { x: 535, y: 195, w: 32, h: 35 }, btnNextAcc: { x: 728, y: 195, w: 32, h: 35 }, btnActionAcc: { x: 535, y: 240, w: 225, h: 35 },
+            play: { x: 270, y: 325, w: 260, h: 48, label: "¡INICIAR CORRIDA!" }
+        };
+
+        // --- SISTEMA DE AUDIO AVANZADO MEJORADO CON MÚSICA DE FONDO PRO ---
+        var audioCtx = null;
+        var bpmNode = null; 
+        var musicInterval = null;
+        var stepCount = 0;
+
+        function initAudio() { 
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
+                startBackgroundMusic();
+            }
+        }
+        
+        function playSound(type) {
+            if (!audioCtx) return;
+            try {
+                let osc = audioCtx.createOscillator();
+                let gain = audioCtx.createGain();
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                let now = audioCtx.currentTime;
+
+                if (type === "jump") {
+                    osc.type = "sine"; osc.frequency.setValueAtTime(180, now); osc.frequency.exponentialRampToValueAtTime(460, now + 0.1);
+                    gain.gain.setValueAtTime(0.2, now); gain.gain.linearRampToValueAtTime(0, now + 0.1); osc.start(now); osc.stop(now + 0.1);
+                } else if (type === "coin") {
+                    osc.type = "sine"; osc.frequency.setValueAtTime(659.25, now); osc.frequency.setValueAtTime(987.77, now + 0.07);
+                    gain.gain.setValueAtTime(0.15, now); gain.gain.linearRampToValueAtTime(0, now + 0.2); osc.start(now); osc.stop(now + 0.2);
+                } else if (type === "dash") {
+                    osc.type = "triangle"; osc.frequency.setValueAtTime(120, now); osc.frequency.linearRampToValueAtTime(40, now + 0.12);
+                    gain.gain.setValueAtTime(0.25, now); gain.gain.linearRampToValueAtTime(0, now + 0.12); osc.start(now); osc.stop(now + 0.12);
+                } else if (type === "hit") {
+                    osc.type = "sawtooth"; osc.frequency.setValueAtTime(180, now); osc.frequency.linearRampToValueAtTime(40, now + 0.35);
+                    gain.gain.setValueAtTime(0.3, now); gain.gain.linearRampToValueAtTime(0, now + 0.35); osc.start(now); osc.stop(now + 0.35);
+                } else if (type === "roll") {
+                    osc.type = "triangle"; osc.frequency.setValueAtTime(200, now); osc.frequency.exponentialRampToValueAtTime(100, now + 0.18);
+                    gain.gain.setValueAtTime(0.15, now); gain.gain.linearRampToValueAtTime(0, now + 0.18); osc.start(now); osc.stop(now + 0.18);
+                } else if (type === "laser") {
+                    osc.type = "sawtooth"; osc.frequency.setValueAtTime(700, now); osc.frequency.exponentialRampToValueAtTime(250, now + 0.08);
+                    gain.gain.setValueAtTime(0.06, now); gain.gain.linearRampToValueAtTime(0, now + 0.08); osc.start(now); osc.stop(now + 0.08);
+                }
+            } catch(e){}
+        }
+
+        // Sintetizador secuencial de música urbana rítmica en tiempo real
+        function startBackgroundMusic() {
+            if (musicInterval) clearInterval(musicInterval);
+            var stepDuration = 60 / 125 / 2; // 125 BPM en corcheas
+            
+            musicInterval = setInterval(() => {
+                if (gameState !== "PLAYING" && gameState !== "MENU") return;
+                let now = audioCtx.currentTime;
+                
+                // 1. Bombo sintetizado (Kick) en los pasos fundamentales
+                if (stepCount % 4 === 0 || stepCount % 6 === 3) {
+                    let osc = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                    osc.connect(g); g.connect(audioCtx.destination);
+                    osc.frequency.setValueAtTime(110, now); osc.frequency.exponentialRampToValueAtTime(45, now + 0.1);
+                    g.gain.setValueAtTime(0.25, now); g.gain.linearRampToValueAtTime(0, now + 0.12);
+                    osc.start(now); osc.stop(now + 0.12);
+                }
+
+                // 2. Línea de bajo adaptable al mapa
+                let notes = [55, 65, 48, 51];
+                if (selectedMap === 1) notes = [48, 48, 40, 43]; // Volcánico más oscuro
+                if (selectedMap === 2) notes = [65, 73, 55, 58]; // Cyberpunk futurista
+                
+                let currentBaseFreq = notes[Math.floor(stepCount / 8) % notes.length];
+                if (stepCount % 2 === 0) {
+                    let osc = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                    osc.type = "triangle"; osc.connect(g); g.connect(audioCtx.destination);
+                    osc.frequency.setValueAtTime(currentBaseFreq, now);
+                    g.gain.setValueAtTime(0.12, now); g.gain.linearRampToValueAtTime(0, now + 0.2);
+                    osc.start(now); osc.stop(now + 0.2);
+                }
+                
+                stepCount++;
+            }, stepDuration * 1000);
+        }
+
+        loop();
+
+        function initGame() {
+            initAudio();
+            platforms = []; obstacles = []; coins = []; walls = []; highWalls = []; ledges = []; enemies = []; bossProjectiles = [];
+            px = 150; py = 150; pvx = 0; pvy = 0; pRotation = 0; pIsRolling = false; pRollTimer = 0;
+            pStamina = 100; pIsSliding = false; ph = baseH; pw = baseW; furthestX = 150; camX = 0;
+            coinsCollectedInRun = 0; totalScore = 0; lastBossMilestone = 0; bossActive = false;
+            pIsWallRunning = false; pIsLedgeHanging = false; pIsClimbing = false; pIsDashing = false;
+
+            if (selectedDifficulty === 0) { diffSpeedMultiplier = 0.85; diffStaminaDrain = 0.6; diffObstacleChance = 0.2; } 
+            else if (selectedDifficulty === 1) { diffSpeedMultiplier = 1.0; diffStaminaDrain = 1.0; diffObstacleChance = 0.5; } 
+            else { diffSpeedMultiplier = 1.25; diffStaminaDrain = 1.4; diffObstacleChance = 0.8; }
+
+            platforms.push({ x: 50, y: 280, w: 550, h: 40, thickness: 40 });
+            nextStructureX = 600;
+            gameState = "PLAYING";
+            uiMenu.style.display = "none"; uiGameplay.style.display = "block";
+        }
+
+        function saveGameData() {
+            localStorage.setItem("parkour_wallet", globalWallet);
+            localStorage.setItem("parkour_record", globalRecord);
+            localStorage.setItem("parkour_unlocked", JSON.stringify(unlockedAccessories));
+            walletText.innerText = globalWallet;
+            recordText.innerText = globalRecord;
+        }
+
+        canvas.addEventListener("click", function(e) {
+            if (gameState !== "MENU") return;
+            initAudio();
+            var rect = canvas.getBoundingClientRect();
+            var mx = e.clientX - rect.left; var my = e.clientY - rect.top;
+
+            for (var i = 0; i < buttons.maps.length; i++) {
+                if (mx >= buttons.maps[i].x && mx <= buttons.maps[i].x + buttons.maps[i].w && my >= buttons.maps[i].y && my <= buttons.maps[i].y + buttons.maps[i].h) selectedMap = i;
+            }
+            for (var i = 0; i < buttons.diffs.length; i++) {
+                if (mx >= buttons.diffs[i].x && mx <= buttons.diffs[i].x + buttons.diffs[i].w && my >= buttons.diffs[i].y && my <= buttons.diffs[i].y + buttons.diffs[i].h) selectedDifficulty = i;
+            }
+            for (var i = 0; i < 7; i++) {
+                if (Math.sqrt((mx - (buttons.colorsXStart + (i * 33)))**2 + (my - buttons.colorsY)**2) <= 13) selectedColor = i;
+            }
+            if (mx >= buttons.btnPrevAcc.x && mx <= buttons.btnPrevAcc.x + buttons.btnPrevAcc.w && my >= buttons.btnPrevAcc.y && my <= buttons.btnPrevAcc.y + buttons.btnPrevAcc.h) {
+                selectedAccessory = (selectedAccessory === 0) ? accessories.length - 1 : selectedAccessory - 1;
+            }
+            if (mx >= buttons.btnNextAcc.x && mx <= buttons.btnNextAcc.x + buttons.btnNextAcc.w && my >= buttons.btnNextAcc.y && my <= buttons.btnNextAcc.y + buttons.btnNextAcc.h) {
+                selectedAccessory = (selectedAccessory === accessories.length - 1) ? 0 : selectedAccessory + 1;
+            }
+            var ba = buttons.btnActionAcc;
+            if (mx >= ba.x && mx <= ba.x + ba.w && my >= ba.y && my <= ba.y + ba.h) {
+                if (!unlockedAccessories.includes(selectedAccessory) && globalWallet >= ACCESSORY_PRICE) {
+                    globalWallet -= ACCESSORY_PRICE; unlockedAccessories.push(selectedAccessory); saveGameData();
+                }
+            }
+            if (mx >= buttons.play.x && mx <= buttons.play.x + buttons.play.w && my >= buttons.play.y && my <= buttons.play.y + buttons.play.h) initGame();
+        });
+
+        window.onkeydown = function(e) {
+            var k = e.keyCode;
+            if ([32,37,39,38,40,87,83,77,67,16].includes(k)) e.preventDefault();
+            if (k == 77) { gameState = "MENU"; uiGameplay.style.display = "none"; uiMenu.style.display = "block"; return; }
+
+            if (gameState === "PLAYING") {
+                if (k == 32) { 
+                    if (!keySpace) {
+                        if (pIsWallRunning) { pvy = -11; pvx = pFacing * 6.5; pIsWallRunning = false; pJumpsLeft = 1; playSound("jump"); triggerSquash(0.7, 1.3); } 
+                        else if (pIsClimbing) { pvy = -10; pvx = -pFacing * 6.5; pFacing = -pFacing; pIsClimbing = false; pJumpsLeft = 1; playSound("jump"); triggerSquash(0.7, 1.3); } 
+                        else if (pIsLedgeHanging) { pIsLedgeHanging = false; pvy = 2; pJumpsLeft = 1; pLedgeCooldown = 25; } 
+                        else if (pJumpsLeft > 0 && !pIsSliding && !pIsDashing) { 
+                            pvy = -11; pJumpsLeft--; pGrounded = false; playSound("jump"); triggerSquash(0.75, 1.3);
+                            if(pJumpsLeft === 0) { pIsRolling = true; pRollTimer = 24; playSound("roll"); } // Roll en doble salto
+                        }
+                    }
+                    keySpace = true;
+                }
+                if (k == 38 || k == 87) { 
+                    if (pIsLedgeHanging) { py -= 50; px += pFacing * 18; pIsLedgeHanging = false; pvy = 0; pGrounded = true; pJumpsLeft = 2; triggerSquash(1.2, 0.8); }
+                    keyUp = true;
+                }
+                if (k == 40 || k == 83) keyDown = true;
+                if (k == 16) { 
+                    if (!keyShift && !pGrounded && !pHasDashedInAir && !pIsWallRunning && !pIsClimbing && !pIsLedgeHanging && pStamina >= 25) {
+                        pIsDashing = true; pDashTimer = 10; pDashDir = pFacing; pStamina -= 25; pHasDashedInAir = true; pvy = 0; playSound("dash");
+                    }
+                    keyShift = true;
+                }
+                if (k == 67) { 
+                    if (!keyC && pGrounded && !pIsSliding && !pIsWallRunning && !pIsClimbing) { 
+                        pIsSliding = true; pSlideDir = pFacing; ph = 24; py += (baseH - 24); pSlideTimer = 22; 
+                    } else if (!keyC && !pGrounded && pvy > 3) { 
+                        // Amortiguar caída fuerte convirtiéndola en Roll acrobático al tocar el suelo
+                        pIsRolling = true; pRollTimer = 25; playSound("roll");
+                    }
+                    keyC = true;
+                }
+                if (k == 65 || k == 37) keyLeft = true; if (k == 68 || k == 39) keyRight = true;
+            } else if (gameState === "GAMEOVER" && k == 82) initGame();
+        };
+
+        window.onkeyup = function(e) {
+            var k = e.keyCode;
+            if (k == 32) keySpace = false; if (k == 16) keyShift = false; if (k == 67) keyC = false;
+            if (k == 38 || k == 87) keyUp = false; if (k == 40 || k == 83) keyDown = false;
+            if (k == 65 || k == 37) keyLeft = false; if (k == 68 || k == 39) keyRight = false;
+        };
+
+        function triggerSquash(sx, sy) { pSquashX = sx; pSquashY = sy; }
+
+        function update() {
+            // Suavizado dinámico de Squash & Stretch
+            pSquashX += (1 - pSquashX) * 0.12; pSquashY += (1 - pSquashY) * 0.12;
+            pBlinkTimer++;
+
+            var moveInput = 0; if (keyRight) moveInput = 1; if (keyLeft) moveInput = -1;
+            if (moveInput !== 0 && !pIsSliding && !pIsLedgeHanging && !pIsDashing) pFacing = moveInput;
+            if (pLedgeCooldown > 0) pLedgeCooldown--;
+
+            // Manejo de rotación en animaciones de Roll
+            if (pIsRolling) {
+                pRotation += 0.26 * pFacing; pRollTimer--;
+                if (pRollTimer <= 0) { pIsRolling = false; pRotation = 0; }
+            }
+
+            var currentSpeed = 4.8 * diffSpeedMultiplier;
+            if (keyShift && pGrounded && pStamina > 0 && moveInput !== 0) { currentSpeed = 7.8 * diffSpeedMultiplier; pStamina -= (0.18 * diffStaminaDrain); }
+
+            if (pIsDashing) {
+                var dSpd = pDashDir * 15 * diffSpeedMultiplier;
+                for (var s = 0; s < 4; s++) {
+                    px += dSpd / 4;
+                    for (var i = 0; i < highWalls.length; i++) {
+                        if (px + pw >= highWalls[i].x && px <= highWalls[i].x + highWalls[i].w && py + ph > highWalls[i].y && py < highWalls[i].y + highWalls[i].h) { pIsDashing = false; px = (pDashDir > 0) ? highWalls[i].x - pw : highWalls[i].x + highWalls[i].w; }
+                    }
+                }
+                pDashTimer--; if (pDashTimer <= 0) pIsDashing = false;
+            } else if (pIsSliding) {
+                pvx = pSlideDir * 8.5 * diffSpeedMultiplier; pSlideTimer--;
+                if (pSlideTimer <= 0) { pIsSliding = false; ph = baseH; py -= (baseH - 24); }
+                px += pvx; checkPlatformCollisions(true);
+            } else if (!pIsLedgeHanging && !pIsClimbing) {
+                pvx = moveInput * currentSpeed; px += pvx; checkPlatformCollisions(true);
+            }
+
+            if (px < 0) px = 0; if (px > furthestX) furthestX = px;
+            
+            var distanceMeter = Math.floor(furthestX / 10);
+            totalScore = distanceMeter + (coinsCollectedInRun * 12);
+            distanceText.innerText = distanceMeter; scoreText.innerText = totalScore; coinsGameText.innerText = coinsCollectedInRun;
+
+            if (distanceMeter > 0 && distanceMeter % 1500 === 0 && lastBossMilestone !== distanceMeter) {
+                bossActive = true; bossHp = 100; bossTimer = 900; lastBossMilestone = distanceMeter; playSound("boss_alert");
+            }
+
+            if (pIsDashing) pvy = 0;
+            else if (pIsLedgeHanging) { pvy = 0; pLedgeTimer--; if (pLedgeTimer <= 0) { pIsLedgeHanging = false; pvy = 4; pLedgeCooldown = 40; } } 
+            else if (pIsClimbing) {
+                if (keyUp && pStamina > 0) { pvy = -3.0; pStamina -= (0.6 * diffStaminaDrain); } 
+                else if (keyDown) { pvy = 3.0; } 
+                else { pvy = 0; pStamina -= (0.1 * diffStaminaDrain); }
+                if (pStamina <= 0) pIsClimbing = false; 
+            } else if (pIsWallRunning) {
+                pvy = 0.8; pStamina -= (0.6 * diffStaminaDrain); px += pFacing * 4.8 * diffSpeedMultiplier;
+                if (pStamina <= 0 || moveInput === 0) pIsWallRunning = false;
+            } else { pvy += 0.55; }
+            
+            if (!pIsLedgeHanging) { 
+                py += pvy; 
+                var oldGrounded = pGrounded;
+                if (!pIsClimbing) pGrounded = false; 
+                checkPlatformCollisions(false); 
+                if(pGrounded && !oldGrounded) triggerSquash(1.3, 0.7); // Aplastarse al aterrizar fluidamente
+            }
+            if (pGrounded) pHasDashedInAir = false;
+
+            if (!pIsWallRunning && !pIsClimbing && !pIsLedgeHanging && !pIsDashing && !(keyShift && moveInput !== 0)) pStamina += 0.4;
+            if (pStamina > 100) pStamina = 100; if (pStamina < 0) pStamina = 0;
+            staminaText.innerText = Math.floor(pStamina);
+
+            for (var i = 0; i < coins.length; i++) {
+                if (!coins[i].collected && px < coins[i].x + 16 && px + pw > coins[i].x && py < coins[i].y + 16 && py + ph > coins[i].y) { coins[i].collected = true; coinsCollectedInRun++; playSound("coin"); }
+            }
+
+            if (!pGrounded && !pIsWallRunning && !pIsLedgeHanging && pStamina > 5) {
+                var touchingHighWall = false;
+                for (var i = 0; i < highWalls.length; i++) {
+                    if (px + pw >= highWalls[i].x - 2 && px <= highWalls[i].x + highWalls[i].w + 2 && py + ph > highWalls[i].y && py < highWalls[i].y + highWalls[i].h) { touchingHighWall = true; if (!pIsClimbing) { pIsClimbing = true; pJumpsLeft = 2; } }
+                }
+                if (!touchingHighWall) pIsClimbing = false;
+            } else pIsClimbing = false;
+
+            if (!pGrounded && !pIsWallRunning && !pIsClimbing && !pIsLedgeHanging && pvy > 0 && pLedgeCooldown === 0) {
+                for (var i = 0; i < ledges.length; i++) {
+                    if (px + pw >= ledges[i].x && px <= ledges[i].x + ledges[i].w && py + 15 >= ledges[i].y && py <= ledges[i].y + ledges[i].h) { pIsLedgeHanging = true; pLedgeTimer = maxLedgeTime; pFacing = ledges[i].dir; py = ledges[i].y - 5; px = (pFacing === 1) ? ledges[i].x - pw : ledges[i].x + ledges[i].w; break; }
+                }
+            }
+
+            var touchingWall = false;
+            if (!pIsLedgeHanging && !pIsClimbing) {
+                for (var i = 0; i < walls.length; i++) {
+                    if (px + pw >= walls[i].x && px <= walls[i].x + walls[i].w && py + ph > walls[i].y && py < walls[i].y + walls[i].h) { if (!pGrounded && pStamina > 5 && pvy > -2) { touchingWall = true; pIsWallRunning = true; pJumpsLeft = 2; } }
+                }
+            }
+            if (!touchingWall) pIsWallRunning = false;
+
+            for (var i = 0; i < enemies.length; i++) {
+                var en = enemies[i]; en.animTimer += 0.08; en.yOffset = Math.sin(en.animTimer) * 6;
+                if (px < en.x + 22 && px + pw > en.x && py < en.y + en.yOffset + 22 && py + ph > en.y + en.yOffset) triggerGameOver();
+            }
+
+            if (bossActive) {
+                bossX = camX + 620; bossTimer--; bossShootCooldown--;
+                if (bossShootCooldown <= 0) {
+                    bossProjectiles.push({ x: bossX, y: bossY + 15, w: 20, h: 5, speed: 7.0 });
+                    bossShootCooldown = Math.floor(Math.random() * 30) + 40; playSound("laser");
+                }
+                if (bossTimer % 9 === 0 && bossHp > 0) bossHp--; if (bossHp <= 0 || bossTimer <= 0) bossActive = false; 
+            }
+
+            bossProjectiles = bossProjectiles.filter(las => {
+                las.x -= las.speed;
+                if (px < las.x + las.w && px + pw > las.x && py < las.y + las.h && py + ph > las.y) { triggerGameOver(); return false; }
+                return las.x > camX - 50;
+            });
+
+            if (py > canvas.height + 50) triggerGameOver();
+
+            var targetCamX = px - 240; if (targetCamX < 0) targetCamX = 0; camX += (targetCamX - camX) * 0.1; // Cámara más elástica y fluida
+
+            // GENERADOR ADAPTATIVO POR DIFICULTAD
+            while (nextStructureX < px + 950) {
+                var dice = Math.random();
+                if (dice < 0.22) {
+                    highWalls.push({ x: nextStructureX, y: 100, w: 25, h: 220 }); platforms.push({ x: nextStructureX, y: 100, w: 120, h: 30, thickness: 30 }); coins.push({ x: nextStructureX - 30, y: 180, collected: false }); nextStructureX += 250;
+                } else if (dice < 0.45) {
+                    walls.push({ x: nextStructureX, y: 110, w: 190, h: 170 }); ledges.push({ x: nextStructureX + 190, y: 240, w: 8, h: 15, dir: 1 }); platforms.push({ x: nextStructureX + 190, y: 240, w: 110, h: 40, thickness: 40 });
+                    if(Math.random() < diffObstacleChance) enemies.push({ x: nextStructureX + 60, y: 70, animTimer: Math.random()*5, yOffset: 0 });
+                    nextStructureX += 350;
+                } else if (dice < 0.68) {
+                    var hY = Math.floor(Math.random() * 60) + 140; ledges.push({ x: nextStructureX, y: hY, w: 8, h: 15, dir: 1 }); platforms.push({ x: nextStructureX, y: hY, w: 100, h: 45, thickness: 45 }); nextStructureX += 240;
+                } else {
+                    // Muros bajos saltables incorporados en la actualización mecánica
+                    var bY = 245; 
+                    platforms.push({ x: nextStructureX, y: bY, w: 180, h: 75, thickness: 75 });
+                    if (Math.random() < diffObstacleChance) {
+                        obstacles.push({ x: nextStructureX + 80, y: bY - 24, w: 16, h: 24 }); // Obstáculo pequeño sobre muro bajo
+                    }
+                    nextStructureX += 280;
+                }
+            }
+
+            var pDist = camX - 300;
+            platforms = platforms.filter(p => p.x > pDist); walls = walls.filter(w => w.x > pDist); highWalls = highWalls.filter(hw => hw.x > pDist); ledges = ledges.filter(l => l.x > pDist); coins = coins.filter(c => c.x > pDist && !c.collected); enemies = enemies.filter(en => en.x > pDist);
+            obstacles = obstacles.filter(obs => { if(obs.x > pDist) { if(px < obs.x + obs.w && px + pw > obs.x && py < obs.y + obs.h && py + ph > obs.y) triggerGameOver(); return true; } return false; });
+        }
+
+        function checkPlatformCollisions(isAxisX) {
+            for (var i = 0; i < platforms.length; i++) {
+                var plat = platforms[i];
+                if (px + pw > plat.x && px < plat.x + plat.w && py + ph > plat.y && py < plat.y + plat.thickness) {
+                    if (isAxisX) { if (pvx > 0) px = plat.x - pw; else if (pvx < 0) px = plat.x + plat.w; } 
+                    else { if (pvy > 0) { py = plat.y - ph; pvy = 0; pGrounded = true; pJumpsLeft = 2; } else if (pvy < 0) { py = plat.y + plat.thickness; pvy = 0.5; } }
+                }
+            }
+        }
+
+        function triggerGameOver() {
+            playSound("hit"); globalWallet += coinsCollectedInRun;
+            var finalDist = Math.floor(furthestX / 10); if (finalDist > globalRecord) globalRecord = finalDist;
+            saveGameData(); gameState = "GAMEOVER";
+        }
+
+        // CONTROL MATRICIAL DE ACCESORIOS PARA ADAPTARSE AL OVALO Y SU ROTACIÓN/SLIDE
+        function drawAccessory(x, y, width, height, facing, id) {
+            if (id === 0) return; headY = -height/2; ctx.save();
+            switch(id) {
+                case 1: ctx.fillStyle = "#e11d48"; ctx.fillRect(-width/2 + 2, headY - 4, width - 4, 5); ctx.fillStyle = "#be123c"; if (facing === 1) ctx.fillRect(-width/2 - 3, headY - 2, 5, 3); else ctx.fillRect(width/2 - 2, headY - 2, 5, 3); break;
+                case 2: ctx.fillStyle = "#2563eb"; ctx.fillRect(-width/2 + 1, headY - 6, width - 2, 7); ctx.fillStyle = "#1d4ed8"; if (facing === 1) ctx.fillRect(-width/2 - 2, headY - 2, 3, 4); else ctx.fillRect(width/2 - 1, headY - 2, 3, 4); break;
+                case 3: ctx.fillStyle = "#475569"; ctx.fillRect(-width/2 - 2, headY - 4, width + 4, 14); ctx.fillStyle = "#0f172a"; if (facing === 1) ctx.fillRect(4, headY + 1, width - 6, 6); else ctx.fillRect(-width/2 - 2, headY + 1, width - 6, 6); break;
+                case 4: ctx.fillStyle = "#f59e0b"; ctx.fillRect(-width/2 + 2, headY - 7, width - 4, 4); ctx.beginPath(); ctx.moveTo(-width/2+2, headY-7); ctx.lineTo(-width/2+5, headY-12); ctx.lineTo(0, headY-7); ctx.lineTo(width/2-5, headY-12); ctx.lineTo(width/2-2, headY-7); ctx.fill(); break;
+                case 5: ctx.fillStyle = "#1e293b"; ctx.fillRect(-width/2 - 1, headY + 3, width + 2, 4); ctx.fillStyle = "#0f172a"; if (facing === 1) ctx.fillRect(-width/2 - 4, headY + 5, 4, 6); else ctx.fillRect(width/2, headY + 5, 4, 6); break;
+                case 6: ctx.fillStyle = "#111"; ctx.fillRect(-width/2 - 3, headY - 2, width + 6, 3); ctx.fillRect(-width/2 + 3, headY - 16, width - 6, 15); break;
+                case 7: ctx.fillStyle = "#f8fafc"; ctx.fillRect(-width/2 + 2, headY - 15, width - 4, 12); ctx.fillRect(-width/2 - 1, headY - 15, width + 2, 4); break;
+                case 8: ctx.fillStyle = "#78350f"; ctx.fillRect(-width/2 - 5, headY - 3, width + 10, 3); ctx.fillRect(-width/2 + 3, headY - 9, width - 6, 7); break;
+                case 9: ctx.fillStyle = "#3f3f46"; ctx.fillRect(-width/2 - 1, headY - 4, width + 2, 4); break;
+                case 10: ctx.fillStyle = "#451a03"; ctx.fillRect(-width/2 - 1, headY - 5, width + 2, 8); break;
+                case 11: ctx.fillStyle = "#000000"; if (facing === 1) ctx.fillRect(2, headY + 4, 16, 5); else ctx.fillRect(-18, headY + 4, 16, 5); break;
+                case 12: ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2; ctx.beginPath(); var mx = (facing === 1) ? width/2 - 6 : -width/2 + 6; ctx.arc(mx, headY + 6, 5, 0, Math.PI*2); ctx.stroke(); break;
+                case 13: ctx.fillStyle = "#dc2626"; ctx.fillRect(-width/2 - 1, headY + 3, width + 2, 6); break;
+                case 14: ctx.fillStyle = "#1e293b"; var vrX = (facing === 1) ? width/2 - 10 : -width/2 - 4; ctx.fillRect(vrX, headY + 3, 16, 8); break;
+                case 15: ctx.fillStyle = "#111"; var pX = (facing === 1) ? width/2 - 9 : -width/2 + 3; ctx.fillRect(pX, headY + 4, 6, 6); break;
+                case 16: ctx.fillStyle = "#fff"; var cigX = (facing === 1) ? width/2 - 2 : -width/2 - 10; ctx.fillRect(cigX, headY + 11, 12, 3); break;
+                case 17: ctx.fillStyle = "#1e293b"; var maskX = (facing === 1) ? width/2 - 10 : -width/2 - 2; ctx.fillRect(maskX, headY + 9, 14, 10); break;
+                case 18: ctx.fillStyle = "#ff0055"; var cybX = (facing === 1) ? 0 : -16; ctx.fillRect(cybX, headY + 4, 20, 4); break;
+                case 19: ctx.fillStyle = "#451a03"; var bX = (facing === 1) ? width/2 - 6 : -width/2 - 4; ctx.fillRect(bX, headY + 12, 10, 3); break;
+                case 20: ctx.fillStyle = "rgba(34, 197, 94, 0.7)"; var visX = (facing === 1) ? width/2 - 5 : -width/2 - 3; ctx.fillRect(visX, headY + 3, 8, 8); break;
+                case 21: ctx.fillStyle = "#64748b"; var jpX = (facing === 1) ? -width/2 - 7 : width/2 - 1; ctx.fillRect(jpX, headY + 10, 8, 18); break;
+                case 22: ctx.fillStyle = "#b91c1c"; var cpX = (facing === 1) ? -width/2 - 2 : width/2; ctx.beginPath(); ctx.moveTo(cpX, headY + 8); ctx.lineTo(cpX - (facing*10), headY + height - 10); ctx.lineTo(cpX, headY + height - 15); ctx.fill(); break;
+                case 23: ctx.fillStyle = "#4c0519"; var alX = (facing === 1) ? -width/2 - 5 : width/2 - 5; ctx.fillRect(alX, headY + 6, 10, 4); break;
+                case 24: ctx.lineWidth = 3; ctx.strokeStyle = "#94a3b8"; ctx.beginPath(); if (facing === 1) { ctx.moveTo(-width/2 - 2, headY + height); ctx.lineTo(width/2 + 2, headY); } else { ctx.moveTo(width/2 + 2, headY + height); ctx.lineTo(-width/2 - 2, headY); } ctx.stroke(); break;
+                case 25: ctx.fillStyle = "#a855f7"; ctx.fillRect(-width/2 - 2, headY + 16, width + 4, 5); break;
+                case 26: ctx.fillStyle = "#ea580c"; ctx.fillRect(-width/2 - 2, headY + 12, width + 4, 4); break;
+                case 27: ctx.fillStyle = "#b45309"; var escX = (facing === 1) ? -width/2 - 6 : width/2 - 2; ctx.fillRect(escX, headY + 10, 8, 14); break;
+                case 28: ctx.strokeStyle = "rgba(34, 211, 238, 0.6)"; ctx.lineWidth = 2; ctx.strokeRect(-width/2 - 4, -height/2 - 4, width + 8, height + 8); break;
+                case 29: ctx.fillStyle = "#047857"; var moX = (facing === 1) ? -width/2 - 6 : width/2 - 2; ctx.fillRect(moX, headY + 10, 8, 16); break;
+                case 30: ctx.fillStyle = "#ca8a04"; var skX = (facing === 1) ? -width/2 - 5 : width/2 - 1; ctx.fillRect(skX, headY + 8, 6, 20); break;
+            }
+            ctx.restore();
+        }
+
+        // RENDERIZACIÓN DE FONDOS PARALLAX TOTALMENTE DIFERENCIADOS POR MAPA
+        function drawParallaxBackground() {
+            var theme = mapThemes[selectedMap];
+            ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            if (selectedMap === 0) {
+                // BOSQUE: Nubes y Pinos
+                ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+                var offCloud = (camX * 0.05) % 500;
+                ctx.fillRect(100 - offCloud, 40, 120, 20); ctx.fillRect(350 - offCloud, 70, 90, 15);
+                
+                ctx.fillStyle = "#122520"; var offPines = (camX * 0.15) % 200;
+                for(var i=-1; i<6; i++) {
+                    var sx = (i * 160) - offPines;
+                    ctx.beginPath(); ctx.moveTo(sx, 260); ctx.lineTo(sx + 40, 160); ctx.lineTo(sx + 80, 260); ctx.fill();
+                }
+            } else if (selectedMap === 1) {
+                // VOLCÁN: Tormentas de Cenizas y Volcanes Distantes
+                ctx.fillStyle = "rgba(239, 68, 68, 0.06)";
+                var offAsh = (camX * 0.4) % 400;
+                for(var a=0; a<15; a++) { ctx.fillRect((a*60) - offAsh, (a*25)%300, 4, 4); }
+                
+                ctx.fillStyle = "#1e0b0b"; var offVolc = (camX * 0.12) % 300;
+                for(var i=-1; i<4; i++) {
+                    var sx = (i * 280) - offVolc;
+                    ctx.beginPath(); ctx.moveTo(sx, 280); ctx.lineTo(sx + 100, 130); ctx.lineTo(sx + 200, 280); ctx.fill();
+                }
+            } else {
+                // CYBERPUNK: Rascacielos Ciber con Ventanas Neón
+                ctx.fillStyle = "rgba(0, 245, 255, 0.05)";
+                var offGrid = (camX * 0.25) % 100;
+                for(var x=0; x<canvas.width; x+=50) { ctx.fillRect(x - offGrid, 0, 1, canvas.height); }
+
+                ctx.fillStyle = "#070714"; var offCyb = (camX * 0.15) % 240;
+                for(var i=-1; i<5; i++) {
+                    var sx = (i * 200) - offCyb;
+                    ctx.fillRect(sx, 120, 80, 280);
+                    ctx.fillStyle = "rgba(255, 0, 127, 0.2)"; ctx.fillRect(sx + 15, 140, 15, 8); ctx.fillRect(sx + 50, 180, 15, 8);
+                    ctx.fillStyle = "#070714";
+                }
+            }
+        }
+
+        function drawMenu() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#05070f"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#00f5ff"; ctx.font = "bold 26px sans-serif"; ctx.textAlign = "center";
+            ctx.fillText("✨ PARKOUR ENGINE EVOLUTION DX", 400, 50);
+
+            ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.textAlign = "left";
+            ctx.fillText("1. SELECCIONAR ENTORNO:", 40, 95);
+            for (var i = 0; i < buttons.maps.length; i++) {
+                var b = buttons.maps[i]; ctx.fillStyle = (selectedMap === i) ? "#00f5ff" : "#13192b"; ctx.fillRect(b.x, b.y, b.w, b.h);
+                ctx.strokeStyle = (selectedMap === i) ? "#fff" : "#334155"; ctx.strokeRect(b.x, b.y, b.w, b.h);
+                ctx.fillStyle = (selectedMap === i) ? "#000" : "#fff"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
+                ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 4);
+            }
+
+            ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.textAlign = "left";
+            ctx.fillText("2. RUTA DE TRÁFICO (DIFICULTAD):", 40, 195);
+            for (var i = 0; i < buttons.diffs.length; i++) {
+                var b = buttons.diffs[i]; var actC = ["#38bdf8", "#fbbf24", "#ef4444"][i];
+                ctx.fillStyle = (selectedDifficulty === i) ? actC : "#13192b"; ctx.fillRect(b.x, b.y, b.w, b.h);
+                ctx.strokeStyle = (selectedDifficulty === i) ? "#fff" : "#334155"; ctx.strokeRect(b.x, b.y, b.w, b.h);
+                ctx.fillStyle = (selectedDifficulty === i) ? "#000" : "#fff"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
+                ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 4);
+            }
+
+            ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.fillText("3. TONO DE PIEL:", 535, 95);
+            for (var i = 0; i < 7; i++) {
+                var cx = buttons.colorsXStart + (i * 33); var cy = buttons.colorsY;
+                ctx.fillStyle = playerColors[i]; ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI*2); ctx.fill();
+                if (selectedColor === i) { ctx.strokeStyle = "#00f5ff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI*2); ctx.stroke(); }
+            }
+
+            ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.fillText("4. TIENDA DE ACCESORIOS:", 535, 175);
+            var bp = buttons.btnPrevAcc; ctx.fillStyle = "#1e293b"; ctx.fillRect(bp.x, bp.y, bp.w, bp.h);
+            ctx.fillStyle = "#fff"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center"; ctx.fillText("<", bp.x + bp.w/2, bp.y + bp.h/2 + 4);
+
+            ctx.fillStyle = "#0c1020"; ctx.fillRect(572, 195, 151, 35);
+            ctx.strokeStyle = "#ff007f"; ctx.strokeRect(572, 195, 151, 35);
+            ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(accessories[selectedAccessory], 647, 216);
+
+            var bn = buttons.btnNextAcc; ctx.fillStyle = "#1e293b"; ctx.fillRect(bn.x, bn.y, bn.w, bn.h);
+            ctx.fillStyle = "#fff"; ctx.fillText(">", bn.x + bn.w/2, bn.y + bn.h/2 + 4);
+
+            var ba = buttons.btnActionAcc; var isOwned = unlockedAccessories.includes(selectedAccessory);
+            ctx.fillStyle = isOwned ? "#10b981" : (globalWallet >= ACCESSORY_PRICE ? "#d97706" : "#4b5563");
+            ctx.fillRect(ba.x, ba.y, ba.w, ba.h); ctx.strokeStyle = "#fff"; ctx.strokeRect(ba.x, ba.y, ba.w, ba.h);
+            ctx.fillStyle = "#fff"; ctx.font = "bold 11px sans-serif";
+            ctx.fillText(isOwned ? "✅ EQUIPADO" : "🛒 COMPRAR POR 5 MONEDAS", ba.x + ba.w/2, ba.y + ba.h/2 + 4);
+
+            // Vista previa del nuevo personaje de la foto
+            ctx.save(); ctx.translate(645, 295);
+            ctx.fillStyle = playerColors[selectedColor];
+            ctx.beginPath(); ctx.ellipse(0, 0, 16, 21, 0, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(-6, -2, 6, 0, Math.PI*2); ctx.arc(6, -2, 6, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(-7.5, -3.5, 2, 0, Math.PI*2); ctx.arc(4.5, -3.5, 2, 0, Math.PI*2); ctx.fill();
+            var activeCosmetic = unlockedAccessories.includes(selectedAccessory) ? selectedAccessory : 0;
+            drawAccessory(0, 0, 32, 42, 1, activeCosmetic);
+            ctx.restore();
+
+            var p = buttons.play; ctx.fillStyle = "#10b981"; ctx.fillRect(p.x, p.y, p.w, p.h);
+            ctx.strokeStyle = "#fff"; ctx.strokeRect(p.x, p.y, p.w, p.h);
+            ctx.fillStyle = "#fff"; ctx.font = "bold 15px sans-serif"; ctx.fillText(p.label, p.x + p.w/2, p.y + p.h/2 + 5);
+        }
+
+        function drawGameplay() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawParallaxBackground();
+
+            var theme = mapThemes[selectedMap];
+            ctx.save(); ctx.translate(-camX, 0);
+
+            for (var i = 0; i < highWalls.length; i++) {
+                ctx.fillStyle = "#151b26"; ctx.fillRect(highWalls[i].x, highWalls[i].y, highWalls[i].w, highWalls[i].h);
+                ctx.fillStyle = theme.climb; for (var st = highWalls[i].y + 10; st < highWalls[i].y + highWalls[i].h; st += 15) ctx.fillRect(highWalls[i].x + 4, st, highWalls[i].w - 8, 3);
+            }
+            for (var i = 0; i < walls.length; i++) {
+                ctx.fillStyle = theme.wallRun; ctx.fillRect(walls[i].x, walls[i].y, walls[i].w, walls[i].h);
+            }
+            for (var i = 0; i < platforms.length; i++) {
+                ctx.fillStyle = theme.grass; ctx.fillRect(platforms[i].x, platforms[i].y, platforms[i].w, 7);
+                ctx.fillStyle = theme.dirt; ctx.fillRect(platforms[i].x, platforms[i].y + 7, platforms[i].w, platforms[i].thickness - 7);
+            }
+            for (var i = 0; i < ledges.length; i++) { ctx.fillStyle = theme.ledge; ctx.fillRect(ledges[i].x, ledges[i].y, ledges[i].w, ledges[i].h); }
+            for (var i = 0; i < coins.length; i++) {
+                if (!coins[i].collected) {
+                    ctx.fillStyle = "#eab308"; ctx.beginPath(); ctx.arc(coins[i].x + 8, coins[i].y + 8, 8, 0, Math.PI * 2); ctx.fill();
+                }
+            }
+            for (var i = 0; i < obstacles.length; i++) {
+                ctx.fillStyle = "#ef4444"; ctx.fillRect(obstacles[i].x, obstacles[i].y, obstacles[i].w, obstacles[i].h);
+            }
+            for (var i = 0; i < enemies.length; i++) {
+                var en = enemies[i]; var finalEnY = en.y + en.yOffset;
+                ctx.fillStyle = "#475569"; ctx.fillRect(en.x, finalEnY, 22, 14);
+                ctx.fillStyle = "#ef4444"; ctx.fillRect(en.x + 8, finalEnY + 4, 6, 6);
+            }
+
+            // DIBUJO AVANZADO DEL PERSONAJE BASADO EN LA IMAGEN (CON SQUASH Y ROTACIÓN MATRICIAL)
+            ctx.save();
+            ctx.translate(px + pw/2, py + ph/2);
+            ctx.rotate(pRotation);
+            ctx.scale(pSquashX, pSquashY);
+
+            // Cuerpo Ovalado Principal
+            ctx.fillStyle = playerColors[selectedColor];
+            ctx.beginPath();
+            ctx.ellipse(0, 0, pw/2, ph/2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#000000";
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Ojos Gigantes Expresivos (Idénticos al archivo de referencia)
+            var isBlinking = (pBlinkTimer % 160 > 154);
+            if (!isBlinking) {
+                ctx.fillStyle = "#000000";
+                // Ojo Izquierdo y Derecho
+                ctx.beginPath(); ctx.arc(-pw*0.22, -ph*0.06, pw*0.23, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(pw*0.22, -ph*0.06, pw*0.23, 0, Math.PI*2); ctx.fill();
+
+                // Brillos curvos blancos superiores internos
+                ctx.fillStyle = "#ffffff";
+                ctx.beginPath(); ctx.arc(-pw*0.26, -ph*0.1, pw*0.08, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(pw*0.18, -ph*0.1, pw*0.08, 0, Math.PI*2); ctx.fill();
+            } else {
+                // Línea de parpadeo
+                ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
+                ctx.beginPath(); ctx.moveTo(-pw*0.4, -ph*0.06); ctx.lineTo(-pw*0.05, -ph*0.06); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(pw*0.05, -ph*0.06); ctx.lineTo(pw*0.4, -ph*0.06); ctx.stroke();
+            }
+
+            // Capa de Accesorios integrada
+            var activeCosmetic = unlockedAccessories.includes(selectedAccessory) ? selectedAccessory : 0;
+            drawAccessory(0, 0, pw, ph, pFacing, activeCosmetic);
+
+            ctx.restore();
+
+            if (pIsLedgeHanging) {
+                ctx.fillStyle = "#0f172a"; ctx.fillRect(px - 3, py - 14, 38, 5);
+                ctx.fillStyle = "#ff007f"; ctx.fillRect(px - 3, py - 14, (pLedgeTimer / maxLedgeTime) * 38, 5);
+            }
+
+            if (bossActive) {
+                ctx.fillStyle = "#1e293b"; ctx.fillRect(bossX, bossY, 52, 42);
+                ctx.fillStyle = "#ef4444"; ctx.fillRect(bossX - 10, bossY + 14, 10, 15);
+                ctx.fillStyle = "#ff0055";
+                for (var j = 0; j < bossProjectiles.length; j++) { ctx.fillRect(bossProjectiles[j].x, bossProjectiles[j].y, bossProjectiles[j].w, bossProjectiles[j].h); }
+
+                ctx.fillStyle = "rgba(10, 15, 30, 0.85)"; ctx.fillRect(camX + 250, 20, 300, 16);
+                ctx.fillStyle = "#ff007f"; ctx.fillRect(camX + 250, 20, (bossHp / bossMaxHp) * 300, 16);
+            }
+
+            ctx.restore();
+        }
+
+        function loop() {
+            if (gameState === "MENU") drawMenu();
+            else if (gameState === "PLAYING") { update(); drawGameplay(); }
+            else if (gameState === "GAMEOVER") {
+                ctx.fillStyle = "rgba(3, 4, 10, 0.97)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "#ef4444"; ctx.font = "bold 36px sans-serif"; ctx.textAlign = "center";
+                ctx.fillText("¡CORREDOR ELIMINADO!", canvas.width / 2, canvas.height / 2 - 40);
+                ctx.fillStyle = "#fbbf24"; ctx.font = "bold 18px sans-serif";
+                ctx.fillText("Puntuación Final: " + totalScore + " pts", canvas.width / 2, canvas.height / 2 + 10);
+                ctx.fillStyle = "#00f5ff"; ctx.font = "bold 14px sans-serif";
+                ctx.fillText("Presiona [ R ] para Reiniciar Corrida | [ M ] Volver al Menú", canvas.width / 2, canvas.height / 2 + 85);
+            }
+            requestAnimationFrame(loop);
+        }
+    </script>
+</body>
+</html>
